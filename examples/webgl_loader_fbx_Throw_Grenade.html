@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>three.js webgl - FBX loader</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<link type="text/css" rel="stylesheet" href="main.css">
+	</head>
+
+	<body>
+		<div id="info">
+			<a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> - FBXLoader<br />
+			Character and animation from <a href="https://www.mixamo.com/" target="_blank" rel="noopener">Mixamo</a>
+		</div>
+
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "../build/three.module.js",
+					"three/addons/": "./jsm/"
+				}
+			}
+		</script>
+
+		<script type="module">
+
+import * as THREE from 'three';
+import Stats from 'three/addons/libs/stats.module.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+
+const manager = new THREE.LoadingManager();
+
+let camera, scene, renderer, stats, object, loader, guiMorphsFolder;
+let mixer;
+
+const clock = new THREE.Clock();
+
+const params = {
+    asset: 'Throw Grenade'
+};
+
+const assets = ['Throw Grenade'];
+const texturePath = 'models/textures/circulo de transmutacion.jpg';
+
+const textureLoader = new THREE.TextureLoader(manager);
+let externalTexture = null;
+
+init();
+
+function init() {
+
+    // 🔹 Cargar textura correctamente
+    externalTexture = textureLoader.load(texturePath);
+
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 2000);
+    camera.position.set(100, 200, 300);
+
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xa0a0a0);
+    scene.fog = new THREE.Fog(0xa0a0a0, 200, 1000);
+
+    // 🔹 Luces
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 2);
+    hemiLight.position.set(0, 200, 0);
+    scene.add(hemiLight);
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 2);
+    dirLight.position.set(0, 200, 100);
+    dirLight.castShadow = true;
+    scene.add(dirLight);
+
+    // 🔹 Luz superior (correcta)
+    const topLight = new THREE.SpotLight(0xffffff, 4);
+    topLight.position.set(0, 350, 0);
+    topLight.castShadow = true;
+    scene.add(topLight);
+    scene.add(topLight.target);
+
+    // 🔹 Piso
+    const mesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(2000, 2000),
+        new THREE.MeshPhongMaterial({ color: 0x999999, depthWrite: false })
+    );
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+
+    const grid = new THREE.GridHelper(2000, 20);
+    scene.add(grid);
+
+    loader = new FBXLoader(manager);
+    loadAsset(params.asset);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.setAnimationLoop(animate);
+    container.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 100, 0);
+    controls.update();
+
+    window.addEventListener('resize', onWindowResize);
+
+    stats = new Stats();
+    container.appendChild(stats.dom);
+
+    const gui = new GUI();
+    gui.add(params, 'asset', assets).onChange(loadAsset);
+
+    guiMorphsFolder = gui.addFolder('Morphs');
+    guiMorphsFolder.hide();
+}
+
+function loadAsset(asset) {
+
+    loader.load('models/fbx/' + asset + '.fbx', function (group) {
+
+        // 🔹 Limpieza correcta
+        if (object) {
+            scene.remove(object);
+        }
+
+        if (mixer) {
+            mixer.stopAllAction();
+            mixer = null;
+        }
+
+        object = group;
+
+        // 🔹 Animación
+        if (object.animations.length > 0) {
+            mixer = new THREE.AnimationMixer(object);
+            mixer.clipAction(object.animations[0]).play();
+        }
+
+        guiMorphsFolder.children.forEach(child => child.destroy());
+        guiMorphsFolder.hide();
+
+        object.traverse(function (child) {
+
+            if (child.isMesh) {
+
+                child.castShadow = true;
+                child.receiveShadow = true;
+
+                const originalMaterial = child.material;
+
+                // 🔹 Nuevo material
+                child.material = new THREE.MeshStandardMaterial({
+                    map: externalTexture,
+                    color: 0xffffff,
+                    metalness: 0.8,
+                    roughness: 0.3,
+                    skinning: child.isSkinnedMesh,
+                    morphTargets: !!child.morphTargetDictionary
+                });
+
+                // 🔹 Corregido: side
+                if (originalMaterial && originalMaterial.side !== undefined) {
+                    child.material.side = originalMaterial.side;
+                }
+
+                child.material.needsUpdate = true;
+
+                // 🔹 Morph targets (sin duplicación)
+                if (child.morphTargetDictionary) {
+
+                    guiMorphsFolder.show();
+                    const folder = guiMorphsFolder.addFolder(child.name || child.uuid);
+
+                    Object.keys(child.morphTargetDictionary).forEach(key => {
+                        folder.add(
+                            child.morphTargetInfluences,
+                            child.morphTargetDictionary[key],
+                            0, 1, 0.01
+                        );
+                    });
+                }
+            }
+        });
+
+        scene.add(object);
+    });
+}
+
+function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function animate() {
+
+    const delta = clock.getDelta();
+
+    if (mixer) mixer.update(delta);
+
+    renderer.render(scene, camera);
+    stats.update();
+}
+
+</script>
+
+	</body>
+</html>
